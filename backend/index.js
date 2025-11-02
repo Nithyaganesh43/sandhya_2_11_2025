@@ -11,37 +11,7 @@ app.use(express.json());
 const MONGO_URI = process.env.MONGO_URI;
 const PORT = process.env.PORT || 10000;
 
-mongoose
-  .connect(MONGO_URI)
-  .then(async () => {
-    console.log('Mongo connected');
-    await mongoose.connection.db.dropDatabase();
-    const Employee = mongoose.model('Employee', employeeSchema);
-    await Employee.insertMany([
-      {
-        name: 'Admin',
-        email: 'admin@pavakie.com',
-        password: 'admin123',
-        role: 'admin',
-        monthlySalary: 50000,
-        designation: 'HR Manager',
-      },
-      {
-        name: 'Sample Employee',
-        email: 'employee@pavakie.com',
-        password: 'emp123',
-        role: 'employee',
-        monthlySalary: 30000,
-        designation: 'Developer',
-      },
-    ]);
-    console.log('Database cleared & seeded');
-  })
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
-
+//------------------ SCHEMAS ------------------//
 const employeeSchema = new mongoose.Schema(
   {
     name: String,
@@ -75,6 +45,7 @@ const attendanceSchema = new mongoose.Schema(
 const Employee = mongoose.model('Employee', employeeSchema);
 const Attendance = mongoose.model('Attendance', attendanceSchema);
 
+//------------------ UTILS ------------------//
 function startOfMonth(y, m) {
   return new Date(y, m - 1, 1);
 }
@@ -101,7 +72,7 @@ async function calcSalaryForMonth(id, y, m) {
   };
 }
 
-// Token-based auth (frontend handles token storage)
+//------------------ AUTH ------------------//
 async function auth(req, res, next) {
   const email = req.headers['x-user-email'];
   if (!email) return res.status(401).json({ error: 'not logged in' });
@@ -111,6 +82,38 @@ async function auth(req, res, next) {
   next();
 }
 
+//------------------ DB CONNECTION ------------------//
+mongoose
+  .connect(MONGO_URI)
+  .then(async () => {
+    console.log('Mongo connected');
+    await mongoose.connection.db.dropDatabase();
+    await Employee.insertMany([
+      {
+        name: 'Admin',
+        email: 'admin@pavakie.com',
+        password: 'admin123',
+        role: 'admin',
+        monthlySalary: 50000,
+        designation: 'HR Manager',
+      },
+      {
+        name: 'Sample Employee',
+        email: 'employee@pavakie.com',
+        password: 'emp123',
+        role: 'employee',
+        monthlySalary: 30000,
+        designation: 'Developer',
+      },
+    ]);
+    console.log('Database cleared & seeded');
+  })
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+
+//------------------ ROUTES ------------------//
 app.get('/', (req, res) =>
   res.json({ ok: true, message: 'Payroll Server Healthy' })
 );
@@ -129,6 +132,26 @@ app.post('/auth/login', async (req, res) => {
 
 app.get('/employees', auth, async (req, res) => {
   res.json({ ok: true, employees: await Employee.find().lean() });
+});
+
+app.post('/employees', auth, async (req, res) => {
+  try {
+    const { name, email, password, role, monthlySalary, designation } =
+      req.body;
+    if (!name || !email)
+      return res.status(400).json({ error: 'name and email required' });
+    const newEmp = await Employee.create({
+      name,
+      email,
+      password: password || 'emp123',
+      role: role || 'employee',
+      monthlySalary: monthlySalary || 30000,
+      designation: designation || '',
+    });
+    res.json({ ok: true, employee: newEmp });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/attendance', auth, async (req, res) => {
@@ -191,4 +214,5 @@ app.get('/salary/pdf', auth, async (req, res) => {
   }
 });
 
+//------------------ SERVER ------------------//
 app.listen(PORT, () => console.log('Server running on port', PORT));
