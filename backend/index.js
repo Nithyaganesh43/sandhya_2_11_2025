@@ -2,13 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const cookieParser = require('cookie-parser');
 const PDFDocument = require('pdfkit');
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
-app.use(cookieParser());
 
 const MONGO_URI = process.env.MONGO_URI;
 const PORT = process.env.PORT || 10000;
@@ -17,9 +15,7 @@ mongoose
   .connect(MONGO_URI)
   .then(async () => {
     console.log('Mongo connected');
-    // clear all records
     await mongoose.connection.db.dropDatabase();
-    // seed defaults
     const Employee = mongoose.model('Employee', employeeSchema);
     await Employee.insertMany([
       {
@@ -46,7 +42,6 @@ mongoose
     process.exit(1);
   });
 
-// Schemas
 const employeeSchema = new mongoose.Schema(
   {
     name: String,
@@ -106,46 +101,36 @@ async function calcSalaryForMonth(id, y, m) {
   };
 }
 
-// Cookie-auth
+// Token-based auth (frontend handles token storage)
 async function auth(req, res, next) {
-  const email = req.cookies.userEmail;
+  const email = req.headers['x-user-email'];
   if (!email) return res.status(401).json({ error: 'not logged in' });
   const user = await Employee.findOne({ email });
-  if (!user) return res.status(401).json({ error: 'invalid session' });
+  if (!user) return res.status(401).json({ error: 'invalid user' });
   req.user = user;
   next();
 }
 
-// Health
 app.get('/', (req, res) =>
   res.json({ ok: true, message: 'Payroll Server Healthy' })
 );
 
-// Auth
 app.post('/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await Employee.findOne({ email, password });
     if (!user)
       return res.status(401).json({ error: 'invalid email or password' });
-    res.cookie('userEmail', user.email, { httpOnly: true, sameSite: 'lax' });
     res.json({ ok: true, message: 'Login success', user });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.post('/auth/logout', (req, res) => {
-  res.clearCookie('userEmail');
-  res.json({ ok: true, message: 'Logged out' });
-});
-
-// Employees
 app.get('/employees', auth, async (req, res) => {
   res.json({ ok: true, employees: await Employee.find().lean() });
 });
 
-// Attendance
 app.post('/attendance', auth, async (req, res) => {
   try {
     const { employee, date, status } = req.body;
@@ -169,7 +154,6 @@ app.post('/attendance', auth, async (req, res) => {
   }
 });
 
-// Salary
 app.get('/salary/generate', auth, async (req, res) => {
   try {
     const { employeeId, month, year } = req.query;
@@ -184,7 +168,6 @@ app.get('/salary/generate', auth, async (req, res) => {
   }
 });
 
-// PDF Salary
 app.get('/salary/pdf', auth, async (req, res) => {
   try {
     const { employeeId, month, year } = req.query;
