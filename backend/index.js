@@ -153,6 +153,16 @@ app.post('/employees', auth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+app.delete('/employees/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await Employee.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ error: 'Employee not found' });
+    res.json({ ok: true, message: 'Employee deleted successfully' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post('/attendance', auth, async (req, res) => {
   try {
