@@ -231,18 +231,22 @@ app.post(
   adminOnly,
   async (req, res) => {
     try {
-      const { name, username, password, salary, empId } = req.body;
+      // FIX: Read from 'username_new' and 'password_new' for the new employee
+      const { name, username_new, password_new, salary, empId } = req.body;
 
-      if (!name || !username || !password || !empId) {
+      // FIX: Validate the new variables
+      if (!name || !username_new || !password_new || !empId) {
         return res.status(400).json({
           ok: false,
-          error: 'Name, username, password, and empId are required',
+          error:
+            'Name, username_new, password_new, and empId are required for the new employee',
         });
       }
 
       // Check if username or empId already exists
       const existingEmp = await Employee.findOne({
-        $or: [{ username }, { empId }],
+        // FIX: Check against username_new
+        $or: [{ username: username_new }, { empId }],
       });
 
       if (existingEmp) {
@@ -254,8 +258,8 @@ app.post(
 
       const newEmployee = await Employee.create({
         name,
-        username,
-        password,
+        username: username_new, // FIX: Save with username_new
+        password: password_new, // FIX: Save with password_new
         role: 'employee',
         salary: salary || 30000,
         empId,
@@ -269,8 +273,8 @@ app.post(
         message: 'Employee created successfully',
         employee: employeeData,
         credentials: {
-          username,
-          password,
+          username: username_new, // FIX: Return the correct new credentials
+          password: password_new,
         },
       });
     } catch (e) {
@@ -319,7 +323,6 @@ app.post('/admin/employees/get', authenticate, adminOnly, async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
-
 // Update Employee
 app.post(
   '/admin/employees/update',
@@ -327,7 +330,15 @@ app.post(
   adminOnly,
   async (req, res) => {
     try {
-      const { employeeId, name, username, password, salary, empId } = req.body;
+      // FIX: Use different names for the employee's new details
+      const {
+        employeeId,
+        name,
+        username_new,
+        password_new,
+        salary,
+        empId,
+      } = req.body;
 
       if (!employeeId) {
         return res
@@ -337,8 +348,8 @@ app.post(
 
       const updateData = {};
       if (name) updateData.name = name;
-      if (username) updateData.username = username;
-      if (password) updateData.password = password;
+      if (username_new) updateData.username = username_new; // FIX
+      if (password_new) updateData.password = password_new; // FIX
       if (salary) updateData.salary = salary;
       if (empId) updateData.empId = empId;
 
@@ -361,7 +372,6 @@ app.post(
     }
   }
 );
-
 // Delete Employee
 app.post(
   '/admin/employees/delete',
