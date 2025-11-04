@@ -14,13 +14,12 @@ const PORT = process.env.PORT || 10000;
 //------------------ SCHEMAS ------------------//
 const employeeSchema = new mongoose.Schema(
   {
-    name: String,
-    email: { type: String, unique: true, required: true },
+    name: { type: String, required: true },
+    username: { type: String, unique: true, required: true },
     password: { type: String, required: true },
     role: { type: String, enum: ['admin', 'employee'], default: 'employee' },
-    monthlySalary: { type: Number, default: 30000 },
-    designation: String,
-    joiningDate: { type: Date, default: Date.now },
+    salary: { type: Number, default: 30000 },
+    empId: { type: String, unique: true, required: true },
   },
   { timestamps: true }
 );
@@ -35,211 +34,771 @@ const attendanceSchema = new mongoose.Schema(
     date: { type: Date, required: true },
     status: {
       type: String,
-      enum: ['present', 'absent', 'leave'],
+      enum: ['present', 'absent'],
       default: 'present',
     },
   },
   { timestamps: true }
 );
 
+// Create unique index for employee + date combination
+attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
+
 const Employee = mongoose.model('Employee', employeeSchema);
 const Attendance = mongoose.model('Attendance', attendanceSchema);
 
-//------------------ UTILS ------------------//
+//------------------ UTILITY FUNCTIONS ------------------//
 function startOfMonth(y, m) {
   return new Date(y, m - 1, 1);
 }
+
 function endOfMonth(y, m) {
   return new Date(y, m, 0, 23, 59, 59, 999);
 }
-async function calcSalaryForMonth(id, y, m) {
-  const emp = await Employee.findById(id).lean();
+
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+async function calculateSalary(employeeId, year, month) {
+  const emp = await Employee.findById(employeeId).lean();
   if (!emp) throw new Error('Employee not found');
-  const from = startOfMonth(y, m),
-    to = endOfMonth(y, m);
-  const presentCount = await Attendance.countDocuments({
-    employee: id,
+
+  const from = startOfMonth(year, month);
+  const to = endOfMonth(year, month);
+
+  const presentDays = await Attendance.countDocuments({
+    employee: employeeId,
     date: { $gte: from, $lte: to },
     status: 'present',
   });
-  const salary = emp.monthlySalary * (presentCount / 30);
+
+  // Calculate salary: (monthlySalary / 30) * presentDays
+  const perDaySalary = emp.salary / 30;
+  const calculatedSalary = perDaySalary * presentDays;
+
   return {
     employee: emp,
-    year: y,
-    month: m,
-    presentDays: presentCount,
-    calculatedSalary: Math.round(salary),
+    year,
+    month,
+    presentDays,
+    totalDaysInMonth: new Date(year, month, 0).getDate(),
+    baseSalary: emp.salary,
+    perDaySalary: Math.round(perDaySalary * 100) / 100,
+    calculatedSalary: Math.round(calculatedSalary * 100) / 100,
   };
 }
 
-//------------------ AUTH ------------------//
-async function auth(req, res, next) {
-  const email = req.headers['x-user-email'];
-  if (!email) return res.status(401).json({ error: 'not logged in' });
-  const user = await Employee.findOne({ email });
-  if (!user) return res.status(401).json({ error: 'invalid user' });
-  req.user = user;
+//------------------ AUTHENTICATION MIDDLEWARE ------------------//
+async function authenticate(req, res, next) {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Username and password required in request body',
+      });
+    }
+
+    const user = await Employee.findOne({ username, password });
+
+    if (!user) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Invalid username or password',
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+// Admin-only middleware
+function adminOnly(req, res, next) {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
+      ok: false,
+      error: 'Access denied. Admin privileges required.',
+    });
+  }
   next();
 }
 
-//------------------ DB CONNECTION ------------------//
+// Employee-only middleware
+function employeeOnly(req, res, next) {
+  if (req.user.role !== 'employee') {
+    return res.status(403).json({
+      ok: false,
+      error: 'Access denied. Employee access only.',
+    });
+  }
+  next();
+}
+
+//------------------ DB CONNECTION & SEEDING ------------------//
 mongoose
   .connect(MONGO_URI)
   .then(async () => {
-    console.log('Mongo connected');
+    console.log('MongoDB connected successfully');
+
+    // Drop database and seed admin
     await mongoose.connection.db.dropDatabase();
-    await Employee.insertMany([
-      {
-        name: 'Admin',
-        email: 'admin@pavakie.com',
-        password: 'admin123',
-        role: 'admin',
-        monthlySalary: 50000,
-        designation: 'HR Manager',
-      },
-      {
-        name: 'Sample Employee',
-        email: 'employee@pavakie.com',
-        password: 'emp123',
-        role: 'employee',
-        monthlySalary: 30000,
-        designation: 'Developer',
-      },
-    ]);
-    console.log('Database cleared & seeded');
+    console.log('Database cleared');
+
+    // Create default admin
+    const admin = await Employee.create({
+      name: 'System Admin',
+      username: 'admin',
+      password: 'admin123',
+      role: 'admin',
+      salary: 50000,
+      empId: 'ADMIN001',
+    });
+
+    console.log('✓ Default admin created');
+    console.log('  Username: admin');
+    console.log('  Password: admin123');
   })
   .catch((e) => {
-    console.error(e);
+    console.error('MongoDB connection error:', e);
     process.exit(1);
   });
 
 //------------------ ROUTES ------------------//
-app.get('/', (req, res) =>
-  res.json({ ok: true, message: 'Payroll Server Healthy' })
+
+// Health check
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    message: 'Payroll Management System - Server Running',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+//------------------ ADMIN LOGIN ------------------//
+app.post('/admin/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Username and password required',
+      });
+    }
+
+    const admin = await Employee.findOne({
+      username,
+      password,
+      role: 'admin',
+    }).select('-password');
+
+    if (!admin) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Invalid admin credentials',
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: 'Admin login successful',
+      user: admin,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+//------------------ EMPLOYEE CRUD (ADMIN ONLY) ------------------//
+
+// Create Employee
+app.post(
+  '/admin/employees/create',
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const { name, username, password, salary, empId } = req.body;
+
+      if (!name || !username || !password || !empId) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Name, username, password, and empId are required',
+        });
+      }
+
+      // Check if username or empId already exists
+      const existingEmp = await Employee.findOne({
+        $or: [{ username }, { empId }],
+      });
+
+      if (existingEmp) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Username or Employee ID already exists',
+        });
+      }
+
+      const newEmployee = await Employee.create({
+        name,
+        username,
+        password,
+        role: 'employee',
+        salary: salary || 30000,
+        empId,
+      });
+
+      const employeeData = newEmployee.toObject();
+      delete employeeData.password;
+
+      res.json({
+        ok: true,
+        message: 'Employee created successfully',
+        employee: employeeData,
+        credentials: {
+          username,
+          password,
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
 );
 
-app.post('/auth/login', async (req, res) => {
+// Get All Employees
+app.post('/admin/employees/list', authenticate, adminOnly, async (req, res) => {
   try {
-    const { email, password } = req.body;
-    const user = await Employee.findOne({ email, password });
-    if (!user)
-      return res.status(401).json({ error: 'invalid email or password' });
-    res.json({ ok: true, message: 'Login success', user });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+    const employees = await Employee.find({ role: 'employee' })
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .lean();
 
-app.get('/employees', auth, async (req, res) => {
-  res.json({ ok: true, employees: await Employee.find().lean() });
-});
-
-app.post('/employees', auth, async (req, res) => {
-  try {
-    const { name, email, password, role, monthlySalary, designation } =
-      req.body;
-    if (!name || !email)
-      return res.status(400).json({ error: 'name and email required' });
-    const newEmp = await Employee.create({
-      name,
-      email,
-      password: password || 'emp123',
-      role: role || 'employee',
-      monthlySalary: monthlySalary || 30000,
-      designation: designation || '',
-    });
-    res.json({ ok: true, employee: newEmp });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-app.delete('/employees/:id', auth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const deleted = await Employee.findByIdAndDelete(id);
-    if (!deleted) return res.status(404).json({ error: 'Employee not found' });
-    res.json({ ok: true, message: 'Employee deleted successfully' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-app.put('/employees/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updated = await Employee.findByIdAndUpdate(id, req.body, {
-      new: true,
-    });
-    if (!updated)
-      return res.status(404).json({ ok: false, message: 'Employee not found' });
     res.json({
       ok: true,
-      message: 'Employee updated successfully',
-      employee: updated,
+      employees,
+      count: employees.length,
     });
-  } catch (err) {
-    res.status(500).json({ ok: false, message: err.message });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-app.post('/attendance', auth, async (req, res) => {
+// Get Single Employee
+app.post('/admin/employees/get', authenticate, adminOnly, async (req, res) => {
   try {
-    const { employee, date, status } = req.body;
-    if (!employee || !date)
-      return res.status(400).json({ error: 'employee and date required' });
-    const d = new Date(date);
-    const att = await Attendance.findOneAndUpdate(
-      {
-        employee,
-        date: {
-          $gte: new Date(d.setHours(0, 0, 0, 0)),
-          $lte: new Date(d.setHours(23, 59, 59, 999)),
+    const { employeeId } = req.body;
+
+    if (!employeeId) {
+      return res.status(400).json({ ok: false, error: 'Employee ID required' });
+    }
+
+    const employee = await Employee.findById(employeeId)
+      .select('-password')
+      .lean();
+
+    if (!employee) {
+      return res.status(404).json({ ok: false, error: 'Employee not found' });
+    }
+
+    res.json({ ok: true, employee });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Update Employee
+app.post(
+  '/admin/employees/update',
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const { employeeId, name, username, password, salary, empId } = req.body;
+
+      if (!employeeId) {
+        return res
+          .status(400)
+          .json({ ok: false, error: 'Employee ID required' });
+      }
+
+      const updateData = {};
+      if (name) updateData.name = name;
+      if (username) updateData.username = username;
+      if (password) updateData.password = password;
+      if (salary) updateData.salary = salary;
+      if (empId) updateData.empId = empId;
+
+      const updated = await Employee.findByIdAndUpdate(employeeId, updateData, {
+        new: true,
+        runValidators: true,
+      }).select('-password');
+
+      if (!updated) {
+        return res.status(404).json({ ok: false, error: 'Employee not found' });
+      }
+
+      res.json({
+        ok: true,
+        message: 'Employee updated successfully',
+        employee: updated,
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+// Delete Employee
+app.post(
+  '/admin/employees/delete',
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const { employeeId } = req.body;
+
+      if (!employeeId) {
+        return res
+          .status(400)
+          .json({ ok: false, error: 'Employee ID required' });
+      }
+
+      const deleted = await Employee.findByIdAndDelete(employeeId);
+
+      if (!deleted) {
+        return res.status(404).json({ ok: false, error: 'Employee not found' });
+      }
+
+      // Also delete all attendance records for this employee
+      await Attendance.deleteMany({ employee: employeeId });
+
+      res.json({
+        ok: true,
+        message: 'Employee and related records deleted successfully',
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+//------------------ ATTENDANCE MANAGEMENT (ADMIN ONLY) ------------------//
+
+// Mark Attendance
+app.post(
+  '/admin/attendance/mark',
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const { employeeId, date, status } = req.body;
+
+      if (!employeeId || !date) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Employee ID and date required',
+        });
+      }
+
+      if (status && !['present', 'absent'].includes(status)) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Status must be either "present" or "absent"',
+        });
+      }
+
+      // Check if employee exists
+      const employee = await Employee.findById(employeeId);
+      if (!employee) {
+        return res.status(404).json({ ok: false, error: 'Employee not found' });
+      }
+
+      const attendanceDate = startOfDay(new Date(date));
+
+      // Use findOneAndUpdate with upsert to avoid duplicates
+      const attendance = await Attendance.findOneAndUpdate(
+        {
+          employee: employeeId,
+          date: {
+            $gte: startOfDay(attendanceDate),
+            $lte: endOfDay(attendanceDate),
+          },
         },
-      },
-      { employee, status, date: d },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
-    );
-    res.json({ ok: true, attendance: att });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+        {
+          employee: employeeId,
+          date: attendanceDate,
+          status: status || 'present',
+        },
+        {
+          new: true,
+          upsert: true,
+          setDefaultsOnInsert: true,
+        }
+      ).populate('employee', 'name empId username');
 
-app.get('/salary/generate', auth, async (req, res) => {
-  try {
-    const { employeeId, month, year } = req.query;
-    if (!employeeId || !month || !year)
-      return res.status(400).json({ error: 'employeeId,month,year required' });
-    res.json({
-      ok: true,
-      salarySlip: await calcSalaryForMonth(employeeId, +year, +month),
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+      res.json({
+        ok: true,
+        message: 'Attendance marked successfully',
+        attendance,
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   }
-});
+);
 
-app.get('/salary/pdf', auth, async (req, res) => {
+// Get Attendance for Employee (Admin can view any employee)
+app.post(
+  '/admin/attendance/view',
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const { employeeId, month, year } = req.body;
+
+      if (!employeeId) {
+        return res
+          .status(400)
+          .json({ ok: false, error: 'Employee ID required' });
+      }
+
+      let query = { employee: employeeId };
+
+      if (month && year) {
+        const from = startOfMonth(+year, +month);
+        const to = endOfMonth(+year, +month);
+        query.date = { $gte: from, $lte: to };
+      }
+
+      const attendance = await Attendance.find(query)
+        .sort({ date: -1 })
+        .populate('employee', 'name empId username')
+        .lean();
+
+      const presentDays = attendance.filter(
+        (a) => a.status === 'present'
+      ).length;
+      const absentDays = attendance.filter((a) => a.status === 'absent').length;
+
+      res.json({
+        ok: true,
+        attendance,
+        summary: {
+          totalRecords: attendance.length,
+          presentDays,
+          absentDays,
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+//------------------ PAYSLIP GENERATION (ADMIN) ------------------//
+
+// Generate Payslip
+app.post(
+  '/admin/payslip/generate',
+  authenticate,
+  adminOnly,
+  async (req, res) => {
+    try {
+      const { employeeId, month, year } = req.body;
+
+      if (!employeeId || !month || !year) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Employee ID, month, and year required',
+        });
+      }
+
+      const payslip = await calculateSalary(employeeId, +year, +month);
+
+      res.json({
+        ok: true,
+        payslip,
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+// Download Payslip PDF
+app.post('/admin/payslip/pdf', authenticate, adminOnly, async (req, res) => {
   try {
-    const { employeeId, month, year } = req.query;
-    const slip = await calcSalaryForMonth(employeeId, +year, +month);
-    const doc = new PDFDocument({ size: 'A4' });
+    const { employeeId, month, year } = req.body;
+
+    if (!employeeId || !month || !year) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Employee ID, month, and year required',
+      });
+    }
+
+    const payslip = await calculateSalary(employeeId, +year, +month);
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename=salary_${employeeId}_${year}_${month}.pdf`
+      `attachment; filename=payslip_${payslip.employee.empId}_${year}_${month}.pdf`
     );
-    doc.fontSize(20).text('Salary Slip', { align: 'center' }).moveDown();
-    doc.fontSize(12).text(`Employee: ${slip.employee.name}`);
-    doc.text(`Email: ${slip.employee.email}`);
-    doc.text(`Month: ${slip.month}/${slip.year}`);
-    doc.text(`Present Days: ${slip.presentDays}`);
-    doc.text(`Calculated Salary: ${slip.calculatedSalary}`);
-    doc.end();
+
     doc.pipe(res);
+
+    // Header
+    doc.fontSize(22).text('SALARY SLIP', { align: 'center' }).moveDown(0.5);
+    doc
+      .fontSize(10)
+      .text(`Month: ${month}/${year}`, { align: 'center' })
+      .moveDown(2);
+
+    // Employee Details
+    doc
+      .fontSize(14)
+      .text('Employee Details:', { underline: true })
+      .moveDown(0.5);
+    doc.fontSize(11);
+    doc.text(`Name: ${payslip.employee.name}`);
+    doc.text(`Employee ID: ${payslip.employee.empId}`);
+    doc.text(`Username: ${payslip.employee.username}`).moveDown(1.5);
+
+    // Salary Details
+    doc.fontSize(14).text('Salary Details:', { underline: true }).moveDown(0.5);
+    doc.fontSize(11);
+    doc.text(`Base Monthly Salary: ₹${payslip.baseSalary}`);
+    doc.text(`Per Day Salary: ₹${payslip.perDaySalary}`);
+    doc.text(`Total Days in Month: ${payslip.totalDaysInMonth}`);
+    doc.text(`Present Days: ${payslip.presentDays}`, { bold: true });
+    doc.moveDown(1.5);
+
+    // Final Salary
+    doc.fontSize(16).text(`Net Salary: ₹${payslip.calculatedSalary}`, {
+      bold: true,
+      underline: true,
+    });
+
+    doc.end();
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-//------------------ SERVER ------------------//
-app.listen(PORT, () => console.log('Server running on port', PORT));
+//------------------ EMPLOYEE LOGIN ------------------//
+app.post('/employee/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Username and password required',
+      });
+    }
+
+    const employee = await Employee.findOne({
+      username,
+      password,
+      role: 'employee',
+    }).select('-password');
+
+    if (!employee) {
+      return res.status(401).json({
+        ok: false,
+        error: 'Invalid employee credentials',
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: 'Employee login successful',
+      user: employee,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+//------------------ EMPLOYEE SELF-SERVICE ------------------//
+
+// Get Own Information
+app.post('/employee/me', authenticate, employeeOnly, async (req, res) => {
+  try {
+    const employee = await Employee.findById(req.user._id)
+      .select('-password')
+      .lean();
+
+    res.json({
+      ok: true,
+      employee,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// View Own Attendance
+app.post(
+  '/employee/attendance',
+  authenticate,
+  employeeOnly,
+  async (req, res) => {
+    try {
+      const { month, year } = req.body;
+
+      let query = { employee: req.user._id };
+
+      if (month && year) {
+        const from = startOfMonth(+year, +month);
+        const to = endOfMonth(+year, +month);
+        query.date = { $gte: from, $lte: to };
+      }
+
+      const attendance = await Attendance.find(query).sort({ date: -1 }).lean();
+
+      const presentDays = attendance.filter(
+        (a) => a.status === 'present'
+      ).length;
+      const absentDays = attendance.filter((a) => a.status === 'absent').length;
+
+      res.json({
+        ok: true,
+        attendance,
+        summary: {
+          totalRecords: attendance.length,
+          presentDays,
+          absentDays,
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+// View Own Payslip
+app.post('/employee/payslip', authenticate, employeeOnly, async (req, res) => {
+  try {
+    const { month, year } = req.body;
+
+    if (!month || !year) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Month and year required',
+      });
+    }
+
+    const payslip = await calculateSalary(req.user._id, +year, +month);
+
+    res.json({
+      ok: true,
+      payslip,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Download Own Payslip PDF
+app.post(
+  '/employee/payslip/pdf',
+  authenticate,
+  employeeOnly,
+  async (req, res) => {
+    try {
+      const { month, year } = req.body;
+
+      if (!month || !year) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Month and year required',
+        });
+      }
+
+      const payslip = await calculateSalary(req.user._id, +year, +month);
+      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename=my_payslip_${year}_${month}.pdf`
+      );
+
+      doc.pipe(res);
+
+      // Header
+      doc.fontSize(22).text('SALARY SLIP', { align: 'center' }).moveDown(0.5);
+      doc
+        .fontSize(10)
+        .text(`Month: ${month}/${year}`, { align: 'center' })
+        .moveDown(2);
+
+      // Employee Details
+      doc
+        .fontSize(14)
+        .text('Employee Details:', { underline: true })
+        .moveDown(0.5);
+      doc.fontSize(11);
+      doc.text(`Name: ${payslip.employee.name}`);
+      doc.text(`Employee ID: ${payslip.employee.empId}`);
+      doc.text(`Username: ${payslip.employee.username}`).moveDown(1.5);
+
+      // Salary Details
+      doc
+        .fontSize(14)
+        .text('Salary Details:', { underline: true })
+        .moveDown(0.5);
+      doc.fontSize(11);
+      doc.text(`Base Monthly Salary: ₹${payslip.baseSalary}`);
+      doc.text(`Per Day Salary: ₹${payslip.perDaySalary}`);
+      doc.text(`Total Days in Month: ${payslip.totalDaysInMonth}`);
+      doc.text(`Present Days: ${payslip.presentDays}`, { bold: true });
+      doc.moveDown(1.5);
+
+      // Final Salary
+      doc.fontSize(16).text(`Net Salary: ₹${payslip.calculatedSalary}`, {
+        bold: true,
+        underline: true,
+      });
+
+      doc.end();
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+);
+
+//------------------ SERVER START ------------------//
+app.listen(PORT, () => {
+  console.log('=================================');
+  console.log('Payroll Management System');
+  console.log(`Server running on port ${PORT}`);
+  console.log('=================================');
+});
+//https://hrpayrollmanagementsystembackend.onrender.com
+//hosted and currectly live
+// flow
+// first admin login with default credentials
+// admin create employee
+// admin can crud employee
+// admin can mark attendence to a employee
+// admin can generate payslip based on attendence
+// employee get username password
+// employee login
+// employee can see all his informations alone
