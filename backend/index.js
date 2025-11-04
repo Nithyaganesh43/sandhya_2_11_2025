@@ -548,18 +548,12 @@ app.post(
     }
   }
 );
-
-// Download Payslip PDF
+//------------------ PAYSLIP PDF (PROFESSIONAL FORMAT) ------------------//
 app.post('/admin/payslip/pdf', authenticate, adminOnly, async (req, res) => {
   try {
     const { employeeId, month, year } = req.body;
-
-    if (!employeeId || !month || !year) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Employee ID, month, and year required',
-      });
-    }
+    if (!employeeId || !month || !year)
+      return res.status(400).json({ ok: false, error: 'Employee ID, month, and year required' });
 
     const payslip = await calculateSalary(employeeId, +year, +month);
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
@@ -569,40 +563,83 @@ app.post('/admin/payslip/pdf', authenticate, adminOnly, async (req, res) => {
       'Content-Disposition',
       `attachment; filename=payslip_${payslip.employee.empId}_${year}_${month}.pdf`
     );
-
     doc.pipe(res);
 
-    // Header
-    doc.fontSize(22).text('SALARY SLIP', { align: 'center' }).moveDown(0.5);
+    // Header Box
     doc
-      .fontSize(10)
-      .text(`Month: ${month}/${year}`, { align: 'center' })
-      .moveDown(2);
+      .rect(50, 50, 500, 50)
+      .fill('#0A3D62')
+      .stroke()
+      .fillColor('#FFFFFF')
+      .fontSize(20)
+      .text('SALARY SLIP', 0, 65, { align: 'center' })
+      .fillColor('#000000');
 
-    // Employee Details
+    // Company + Month Info
+    doc.moveDown(2);
+    doc.fontSize(11).text(`Payroll Month: ${month}/${year}`, { align: 'right' });
+    doc.moveDown(1);
+
+    // Employee Information
     doc
-      .fontSize(14)
-      .text('Employee Details:', { underline: true })
-      .moveDown(0.5);
-    doc.fontSize(11);
-    doc.text(`Name: ${payslip.employee.name}`);
-    doc.text(`Employee ID: ${payslip.employee.empId}`);
-    doc.text(`Username: ${payslip.employee.username}`).moveDown(1.5);
-
-    // Salary Details
-    doc.fontSize(14).text('Salary Details:', { underline: true }).moveDown(0.5);
-    doc.fontSize(11);
-    doc.text(`Base Monthly Salary: ₹${payslip.baseSalary}`);
-    doc.text(`Per Day Salary: ₹${payslip.perDaySalary}`);
-    doc.text(`Total Days in Month: ${payslip.totalDaysInMonth}`);
-    doc.text(`Present Days: ${payslip.presentDays}`, { bold: true });
+      .fontSize(13)
+      .text('Employee Details', { underline: true })
+      .moveDown(0.8)
+      .fontSize(11);
+    const emp = payslip.employee;
+    doc.text(`Employee Name: ${emp.name}`);
+    doc.text(`Employee ID: ${emp.empId}`);
+    doc.text(`Username: ${emp.username}`);
+    doc.text(`Designation: ${emp.role === 'admin' ? 'Administrator' : 'Employee'}`);
     doc.moveDown(1.5);
 
-    // Final Salary
-    doc.fontSize(16).text(`Net Salary: ₹${payslip.calculatedSalary}`, {
-      bold: true,
-      underline: true,
+    // Salary Table
+    const tableTop = doc.y;
+    const startX = 60;
+    const column1Width = 250;
+    const column2Width = 200;
+
+    // Table header
+    doc
+      .fontSize(12)
+      .fillColor('#0A3D62')
+      .text('Earnings', startX, tableTop, { bold: true })
+      .text('Amount (Rs.)', startX + column1Width, tableTop)
+      .moveDown(0.8)
+      .fillColor('#000000');
+
+    // Divider line
+    doc.moveTo(startX, tableTop + 15).lineTo(startX + 400, tableTop + 15).stroke();
+
+    // Salary details
+    let y = tableTop + 25;
+    const details = [
+      ['Base Monthly Salary', payslip.baseSalary],
+      ['Per Day Salary', payslip.perDaySalary],
+      ['Total Days in Month', payslip.totalDaysInMonth],
+      ['Present Days', payslip.presentDays],
+      ['Calculated Net Salary', payslip.calculatedSalary]
+    ];
+
+    details.forEach(([label, value]) => {
+      doc.text(label, startX, y).text(value.toString(), startX + column1Width, y);
+      y += 20;
     });
+
+    // Highlight final salary
+    doc
+      .fontSize(13)
+      .moveDown(1)
+      .fillColor('#0A3D62')
+      .text(`Net Payable Salary: Rs.${payslip.calculatedSalary}`, { align: 'center', underline: true });
+
+    // Footer
+    doc
+      .fillColor('#555')
+      .fontSize(10)
+      .text('This is a computer-generated payslip. No signature required.', 0, 770, {
+        align: 'center'
+      });
 
     doc.end();
   } catch (e) {
@@ -724,75 +761,104 @@ app.post('/employee/payslip', authenticate, employeeOnly, async (req, res) => {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+//------------------ EMPLOYEE PAYSLIP PDF (PROFESSIONAL FORMAT) ------------------//
+app.post('/employee/payslip/pdf', authenticate, employeeOnly, async (req, res) => {
+  try {
+    const { month, year } = req.body;
+    if (!month || !year)
+      return res.status(400).json({ ok: false, error: 'Month and year required' });
 
-// Download Own Payslip PDF
-app.post(
-  '/employee/payslip/pdf',
-  authenticate,
-  employeeOnly,
-  async (req, res) => {
-    try {
-      const { month, year } = req.body;
+    const payslip = await calculateSalary(req.user._id, +year, +month);
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
 
-      if (!month || !year) {
-        return res.status(400).json({
-          ok: false,
-          error: 'Month and year required',
-        });
-      }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=my_payslip_${year}_${month}.pdf`
+    );
+    doc.pipe(res);
 
-      const payslip = await calculateSalary(req.user._id, +year, +month);
-      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    // Header bar
+    doc
+      .rect(50, 50, 500, 50)
+      .fill('#0A3D62')
+      .stroke()
+      .fillColor('#FFFFFF')
+      .fontSize(20)
+      .text('SALARY SLIP', 0, 65, { align: 'center' })
+      .fillColor('#000000');
 
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename=my_payslip_${year}_${month}.pdf`
-      );
+    // Payroll Info
+    doc.moveDown(2);
+    doc.fontSize(11).text(`Payroll Month: ${month}/${year}`, { align: 'right' });
+    doc.moveDown(1);
 
-      doc.pipe(res);
+    // Employee Information
+    const emp = payslip.employee;
+    doc
+      .fontSize(13)
+      .text('Employee Details', { underline: true })
+      .moveDown(0.8)
+      .fontSize(11);
+    doc.text(`Employee Name: ${emp.name}`);
+    doc.text(`Employee ID: ${emp.empId}`);
+    doc.text(`Username: ${emp.username}`);
+    doc.text(`Designation: ${emp.role === 'admin' ? 'Administrator' : 'Employee'}`);
+    doc.moveDown(1.5);
 
-      // Header
-      doc.fontSize(22).text('SALARY SLIP', { align: 'center' }).moveDown(0.5);
-      doc
-        .fontSize(10)
-        .text(`Month: ${month}/${year}`, { align: 'center' })
-        .moveDown(2);
+    // Salary Table
+    const tableTop = doc.y;
+    const startX = 60;
+    const column1Width = 250;
 
-      // Employee Details
-      doc
-        .fontSize(14)
-        .text('Employee Details:', { underline: true })
-        .moveDown(0.5);
-      doc.fontSize(11);
-      doc.text(`Name: ${payslip.employee.name}`);
-      doc.text(`Employee ID: ${payslip.employee.empId}`);
-      doc.text(`Username: ${payslip.employee.username}`).moveDown(1.5);
+    // Table header
+    doc
+      .fontSize(12)
+      .fillColor('#0A3D62')
+      .text('Earnings', startX, tableTop, { bold: true })
+      .text('Amount (Rs.)', startX + column1Width, tableTop)
+      .moveDown(0.8)
+      .fillColor('#000000');
 
-      // Salary Details
-      doc
-        .fontSize(14)
-        .text('Salary Details:', { underline: true })
-        .moveDown(0.5);
-      doc.fontSize(11);
-      doc.text(`Base Monthly Salary: ₹${payslip.baseSalary}`);
-      doc.text(`Per Day Salary: ₹${payslip.perDaySalary}`);
-      doc.text(`Total Days in Month: ${payslip.totalDaysInMonth}`);
-      doc.text(`Present Days: ${payslip.presentDays}`, { bold: true });
-      doc.moveDown(1.5);
+    // Divider line
+    doc.moveTo(startX, tableTop + 15).lineTo(startX + 400, tableTop + 15).stroke();
 
-      // Final Salary
-      doc.fontSize(16).text(`Net Salary: ₹${payslip.calculatedSalary}`, {
-        bold: true,
-        underline: true,
+    // Salary details
+    let y = tableTop + 25;
+    const details = [
+      ['Base Monthly Salary', payslip.baseSalary],
+      ['Per Day Salary', payslip.perDaySalary],
+      ['Total Days in Month', payslip.totalDaysInMonth],
+      ['Present Days', payslip.presentDays],
+      ['Calculated Net Salary', payslip.calculatedSalary]
+    ];
+
+    details.forEach(([label, value]) => {
+      doc.text(label, startX, y).text(value.toString(), startX + column1Width, y);
+      y += 20;
+    });
+
+    // Highlight final salary
+    doc
+      .fontSize(13)
+      .moveDown(1)
+      .fillColor('#0A3D62')
+      .text(`Net Payable Salary: Rs.${payslip.calculatedSalary}`, { align: 'center', underline: true });
+
+    // Footer
+    doc
+      .fillColor('#555')
+      .fontSize(10)
+      .text('This is a computer-generated payslip. No signature required.', 0, 770, {
+        align: 'center'
       });
 
-      doc.end();
-    } catch (e) {
-      res.status(500).json({ ok: false, error: e.message });
-    }
+    doc.end();
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
-);
+});
+
 
 //------------------ SERVER START ------------------//
 app.listen(PORT, () => {
